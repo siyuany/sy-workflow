@@ -2,15 +2,14 @@
 import concurrent.futures
 import enum
 import logging
+import os
 import threading
 import uuid
 from typing import Any
+from typing import Callable
 from typing import List
 from typing import Optional
 from typing import Set
-
-__version__ = '0.0.1'
-__author__ = 'Yao Siyuan <siyuan89@163.com>'
 
 _logger = logging.getLogger(__name__)
 
@@ -63,12 +62,12 @@ class AsyncTask(object):
       ]
     else:
       self.__dep_tasks: List[AsyncTask] = []
-    self.__status: TaskStatus = TaskStatus.WAITING
+    self._status: TaskStatus = TaskStatus.WAITING
     self.__name = name
     if self.__name is None:
       self.__name = f'{self.__class__.__name__}-{AsyncTask.__seq_number()}'
     self.__uid = self.__task_uid_generator()
-    self.__result = None
+    self._result = None
     self.__lock = threading.Lock()
     self.__retries = int(retries)
     if self.__retries <= 0:
@@ -108,7 +107,7 @@ class AsyncTask(object):
       raise RuntimeError('任务状态未完成，无法获取任务结果！')
     else:
       with self.__lock:
-        res = self.__result
+        res = self._result
       return res
 
   @property
@@ -120,7 +119,7 @@ class AsyncTask(object):
   def status(self):
     """任务状态"""
     with self.__lock:
-      return self.__status
+      return self._status
 
   def is_ready(self):
     """任务是否已就绪"""
@@ -136,14 +135,14 @@ class AsyncTask(object):
     在上游任务均为 `DONE` 时修改本任务状态为 `READY`
     """
     with self.__lock:
-      if self.__status == TaskStatus.WAITING:
+      if self._status == TaskStatus.WAITING:
         dep_tasks = list(
             filter(
                 lambda t: t.status not in [TaskStatus.DONE, TaskStatus.ERROR],
                 self.dep_tasks))
         if not dep_tasks:
-          self.__status = TaskStatus.READY
-          _logger.debug(f'任务 {self.__name} 状态修改为 {self.__status}')
+          self._status = TaskStatus.READY
+          _logger.debug(f'任务 {self.__name} 状态修改为 {self._status}')
       else:
         raise RuntimeError("该方法仅可对处于等待（WAITING）状态的任务更新任务状态")
 
@@ -158,15 +157,17 @@ class AsyncTask(object):
     if list(filter(lambda t: t.status == TaskStatus.ERROR, self.dep_tasks)):
       _logger.error(f'任务 {self.name} 上游任务失败，本任务不再执行')
       with self.__lock:
-        self.__status = TaskStatus.ERROR
+        self._status = TaskStatus.ERROR
     else:
       _logger.debug(f'执行任务 {self.name} 预处理方法')
       self.preprocess()
       with self.__lock:
-        self.__status = TaskStatus.RUNNING
+        self._status = TaskStatus.RUNNING
 
   def run(self):
-    """Task任务对象异步实际执行代码，在用户代码基础上增加了异常处理逻辑"""
+    """
+    Task任务对象异步实际执行代码，在用户代码基础上增加了异常处理逻辑
+    """
     _logger.debug(f'开始执行任务{self.name}主方法')
     run_count = 0
     while run_count < self.__retries:
@@ -207,22 +208,31 @@ class AsyncTask(object):
       try:
         result = future.result()
         with self.__lock:
-          self.__result = result
-          self.__status = TaskStatus.DONE
+          self._result = result
+          self._status = TaskStatus.DONE
+
+          # `postprocess` 中可以给 `self._status` 和 `self._result` 重新赋值
           self.postprocess(future)
           _logger.debug(f'任务 {self.name} 后处理方法执行完成')
       except (BaseException, Exception) as err:
         _logger.debug(f'任务 {self.name} 后处理方法，任务运行错误 {repr(err)}')
         with self.__lock:
-          self.__status = TaskStatus.ERROR
-          self.__result = err
+          self._status = TaskStatus.ERROR
+          self._result = err
         raise err
 
   def preprocess(self):
     """用户重写该方法，该方法为同步执行的预处理流程（注意：不要在此执行耗时任务）。"""
 
   def process(self) -> Any:
-    """用户重写该方法，该方法为异步执行的任务。"""
+    """
+    用户重写该方法，该方法为异步执行的任务。注意，在使用多线程时，推荐在方法内部完成
+    异常处理，该方法不要抛出异常，避免异常在进程间传递。通过用户结果约定异常传递，并
+    在 `postprocess` 中通过结果识别返回的异常并完成后处理。
+
+    在本方法中可以对 `self._result` 和 `self._status` 重新赋值，调用本方法时已获取
+    状态锁，方法内不用加锁。
+    """
 
   def postprocess(self, future: concurrent.futures.Future):
     """
@@ -257,8 +267,14 @@ class TaskScheduler(object):
 
     # 待执行任务集
     self.__task_set: Set[AsyncTask] = set()
+
+    # 任务集同步锁
     self.__task_set_lock = threading.Lock()
-    self.__task_set_cond = threading.Condition()
+
+    # self.__task_set_cond = threading.Condition()
+
+    # 每次任务完成时，均触发提交新任务流程
+    self.__task_set_notifier = threading.Semaphore(value=0)
 
   def submit_ready_task(self):
     """
@@ -297,24 +313,34 @@ class TaskScheduler(object):
     _logger.debug(f'任务 {task.name} 提交执行')
     task.pre_task()
     future = self.__executor.submit(task.run)
-    future.add_done_callback(task.post_task)
-    _logger.debug(f'添加任务 {task.name} 完成通知回调')
-    future.add_done_callback(lambda f: self.task_done_notify())
+    _logger.debug(f'添加任务 {task.name} 完成及通知回调')
+    future.add_done_callback(lambda f: self.task_done_and_notify(f, task))
     _logger.debug(f'任务 {task.name} 提交执行完成')
 
-  def task_done_notify(self):
-    with self.__task_set_cond:
-      _logger.debug('任务完成，通知调度后续任务')
-      self.__task_set_cond.notify_all()
+  def task_done_and_notify(self,
+                           future: concurrent.futures.Future = None,
+                           task: AsyncTask = None):
+    # with self.__task_set_cond:
+    #   _logger.debug('任务完成，通知调度后续任务')
+    #   self.__task_set_cond.notify_all()
+    _logger.debug(f'执行任务 {task.name} 回调')
+    task.post_task(future)
+    _logger.debug(f'任务 {task.name} 完成，通知调度后续任务')
+    self.__task_set_notifier.release()
 
   def start(self):
     while self.__task_set:
       with self.__task_set_lock:
         self.submit_ready_task()
-      _logger.debug('等待任务完成')
-      with self.__task_set_cond:
-        self.__task_set_cond.wait(timeout=1)
-        _logger.debug('收到任务完成通知')
+      # _logger.debug('等待任务完成')
+      # with self.__task_set_cond:
+      #   self.__task_set_cond.wait(timeout=1)
+      #   _logger.debug('收到任务完成通知')
+
+      _logger.debug('等待任务完成通知')
+      self.__task_set_notifier.acquire()
+      _logger.debug('收到任务完成通知')
+
     _logger.debug('无待执行任务，等待已提交执行任务完成')
     self.__executor.shutdown(wait=True)
 
@@ -339,3 +365,49 @@ class TaskScheduler(object):
 
     with self.__task_set_lock:
       _add_task(task)
+
+
+class SQLExecutionTask(AsyncTask):
+  """
+  SQL 任务类，该任务用于执行给定的 SQL 代码。其中 `sql_statement` 可以为文本，也可以为
+  path-like object。当为后者时，将从指定路径的文件中读取 SQL 代码。
+  
+  :param connect_fn: Callable，建立数据库连接的函数。数据库连接需要异步建立，建议不
+    复用本地（local）建立的数据库连接。
+  :param sql_statement: str，SQL 代码文本，或存储 SQL 代码的文件路径。
+  """
+
+  def __init__(self,
+               connect_fn: Callable,
+               sql_statement: str,
+               dep_tasks: Optional[List[AsyncTask]] = None,
+               name: Optional[str] = None,
+               retries: int = 3):
+    super().__init__(dep_tasks, name, retries)
+    self.__connect_fn = connect_fn
+    self.__sql_statement = sql_statement
+    self.__is_path = os.path.isfile(sql_statement)
+
+  def process(self) -> Any:
+    # 当 sql_statement 为 path-like object 时，读取文件内容
+    if self.__is_path:
+      with open(self.__sql_statement, 'r') as sql_file:
+        sql = '\n'.join(sql_file.readlines())
+    else:
+      sql = self.__sql_statement
+
+    sqls = list(filter(lambda x: x.strip(), sql.split(';')))
+
+    # 建立数据库连接
+    conn = self.__connect_fn()
+    for statement in sqls:
+      cursor = conn.cursor()
+      _logger.debug(f'任务 {self.name} 执行SQL语句: {statement}')
+      cursor.execute(statement)
+      cursor.close()
+
+    _logger.debug(f'任务 {self.name} 中所有 SQL 语句执行完毕')
+    conn.close()
+
+
+__all__ = ['AsyncTask', 'SQLExecutionTask', 'TaskStatus', 'TaskScheduler']
