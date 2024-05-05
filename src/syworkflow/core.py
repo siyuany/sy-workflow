@@ -339,3 +339,6 @@ class TaskScheduler(object):
 
     with self.__task_set_lock:
       _add_task(task)
+
+
+__all__ = ['AsyncTask', 'TaskScheduler']
