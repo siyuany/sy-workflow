@@ -78,6 +78,7 @@ class AsyncTask(object):
         f'实例化 {self.__class__.__name__} 对象 {self.name}[{self.uid.hex}]')
 
   def __getstate__(self):
+    # pickle interface
     state = self.__dict__.copy()
     state.pop('_AsyncTask__lock')
     return state
@@ -181,7 +182,7 @@ class AsyncTask(object):
           raise err
         else:
           _logger.info(
-            f'任务 {self.name} 主方法执行错误 {repr(err)}，第 {run_count + 1} 次尝试')
+              f'任务 {self.name} 主方法执行错误 {repr(err)}，第 {run_count + 1} 次尝试')
 
   def post_task(self, future: concurrent.futures.Future):
     """
@@ -327,9 +328,10 @@ class TaskScheduler(object):
     def _add_task(_task: AsyncTask):
       # 当任务自身不在待执行任务集，且任务状态不为 `RUNNING`、`DONE`、`ERROR` 三者之一时，
       # 将任务自身及其上游依赖递归加入待执行任务集
-      if _task not in self.__task_set and \
-         isinstance(_task, AsyncTask) and \
-         _task.status not in (TaskStatus.RUNNING, TaskStatus.DONE, TaskStatus.ERROR):
+      if _task not in self.__task_set and isinstance(
+          _task, AsyncTask) and _task.status not in (TaskStatus.RUNNING,
+                                                     TaskStatus.DONE,
+                                                     TaskStatus.ERROR):
         _logger.debug(f'将 {_task.name} 加入调度')
         self.__task_set.add(_task)
         for t in _task.dep_tasks:
