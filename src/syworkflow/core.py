@@ -380,8 +380,8 @@ class SQLExecutionTask(AsyncTask):
   def __init__(self,
                connect_fn: Callable,
                sql_statement: str,
-               dep_tasks: List | None = None,
-               name: str | None = None,
+               dep_tasks: Optional[List[AsyncTask]] = None,
+               name: Optional[str] = None,
                retries: int = 3):
     super().__init__(dep_tasks, name, retries)
     self.__connect_fn = connect_fn
@@ -397,7 +397,6 @@ class SQLExecutionTask(AsyncTask):
       sql = self.__sql_statement
 
     sqls = list(filter(lambda x: x.strip(), sql.split(';')))
-    _logger.debug(sqls)
 
     # 建立数据库连接
     conn = self.__connect_fn()
