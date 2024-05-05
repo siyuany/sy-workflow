@@ -1,24 +1,29 @@
 # -*- encoding: utf-8 -*-
-import unittest
-import syworkflow as wf
+import os
+import sys
+
+print(os.getcwd())
+sys.path.insert(0, os.path.normpath(os.path.join(os.getcwd(), 'src')))
+print(sys.path)
+
+import sqlite3
 import time
+import unittest
+
+import syworkflow as wf
 
 
 class SleepTask(wf.AsyncTask):
 
-  def __init__(self,
-               duration=1,
-               dep_tasks: wf.List | None = None,
-               name: str | None = None,
-               retries: int = 3):
+  def __init__(self, duration=1, dep_tasks=None, name=None, retries=3):
     super().__init__(dep_tasks, name, retries)
     self.__duration = duration
 
-  def process(self) -> wf.Any:
+  def process(self):
     time.sleep(self.__duration)
 
 
-class TestTask(unittest.TestCase):
+class TestAsyncTask(unittest.TestCase):
 
   def test_task_equal(self):
     task1 = wf.AsyncTask()
@@ -55,6 +60,30 @@ class TestTask(unittest.TestCase):
 
     schd = wf.TaskScheduler(executor_type='process', max_workers=2)
     schd.add_task(task7)
+    schd.start()
+
+
+def connect_fn():
+  conn = sqlite3.connect(':memory:', autocommit=True)
+  return conn
+
+
+class TestSQLExecutionTask(unittest.TestCase):
+
+  def test_sql_task1(self):
+    sql = """
+    create table test(
+      name   string,
+      value  bigint
+    );
+
+    insert into test(name, value)
+    values ('a', 1), ('b', 2)
+    ;
+    """
+    task = wf.SQLExecutionTask(connect_fn=connect_fn, sql_statement=sql)
+    schd = wf.TaskScheduler()
+    schd.add_task(task)
     schd.start()
 
 

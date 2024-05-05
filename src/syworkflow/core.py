@@ -2,9 +2,11 @@
 import concurrent.futures
 import enum
 import logging
+import os
 import threading
 import uuid
 from typing import Any
+from typing import Callable
 from typing import List
 from typing import Optional
 from typing import Set
@@ -365,4 +367,48 @@ class TaskScheduler(object):
       _add_task(task)
 
 
-__all__ = ['AsyncTask', 'TaskStatus', 'TaskScheduler']
+class SQLExecutionTask(AsyncTask):
+  """
+  SQL 任务类，该任务用于执行给定的 SQL 代码。其中 `sql_statement` 可以为文本，也可以为
+  path-like object。当为后者时，将从指定路径的文件中读取 SQL 代码。
+  
+  :param connect_fn: Callable，建立数据库连接的函数。数据库连接需要异步建立，建议不
+    复用本地（local）建立的数据库连接。
+  :param sql_statement: str，SQL 代码文本，或存储 SQL 代码的文件路径。
+  """
+
+  def __init__(self,
+               connect_fn: Callable,
+               sql_statement: str,
+               dep_tasks: List | None = None,
+               name: str | None = None,
+               retries: int = 3):
+    super().__init__(dep_tasks, name, retries)
+    self.__connect_fn = connect_fn
+    self.__sql_statement = sql_statement
+    self.__is_path = os.path.isfile(sql_statement)
+
+  def process(self) -> Any:
+    # 当 sql_statement 为 path-like object 时，读取文件内容
+    if self.__is_path:
+      with open(self.__sql_statement, 'r') as sql_file:
+        sql = '\n'.join(sql_file.readlines())
+    else:
+      sql = self.__sql_statement
+
+    sqls = list(filter(lambda x: x.strip(), sql.split(';')))
+    _logger.debug(sqls)
+
+    # 建立数据库连接
+    conn = self.__connect_fn()
+    for statement in sqls:
+      cursor = conn.cursor()
+      _logger.debug(f'任务 {self.name} 执行SQL语句: {statement}')
+      cursor.execute(statement)
+      cursor.close()
+
+    _logger.debug(f'任务 {self.name} 中所有 SQL 语句执行完毕')
+    conn.close()
+
+
+__all__ = ['AsyncTask', 'SQLExecutionTask', 'TaskStatus', 'TaskScheduler']
