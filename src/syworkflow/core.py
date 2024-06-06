@@ -4,11 +4,13 @@ import enum
 import logging
 import os
 import threading
+import time
 import uuid
 from typing import Any
 from typing import Callable
 from typing import List
 from typing import Optional
+import datetime
 from typing import Set
 
 _logger = logging.getLogger(__name__)
@@ -410,4 +412,33 @@ class SQLExecutionTask(AsyncTask):
     conn.close()
 
 
-__all__ = ['AsyncTask', 'SQLExecutionTask', 'TaskStatus', 'TaskScheduler']
+class TimerTask(AsyncTask):
+
+  def __init__(self,
+               hour: int = 0,
+               minute: int = 0,
+               second: int = 0,
+               dep_tasks: Optional[List] = None,
+               name: Optional[str] = None,
+               retries: int = 3):
+    super().__init__(dep_tasks, name, retries)
+    today = datetime.date.today()
+    self.__wake_datetime = datetime.datetime(
+        year=today.year,
+        month=today.month,
+        day=today.day,
+        hour=hour,
+        minute=minute,
+        second=second)
+
+  def process(self) -> Any:
+    current_time = datetime.datetime.now()
+    if current_time < self.__wake_datetime:
+      time_gap = self.__wake_datetime - current_time
+      _logger.info(f'休眠 {time_gap} 秒后唤醒')
+      time.sleep(time_gap.seconds)
+
+    return True
+
+
+__all__ = ['AsyncTask', 'SQLExecutionTask', 'TaskStatus', 'TaskScheduler', 'TimerTask']
