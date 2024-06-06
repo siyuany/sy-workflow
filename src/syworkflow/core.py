@@ -1,5 +1,6 @@
 # -*- encoding: utf-8 -*-
 import concurrent.futures
+import datetime
 import enum
 import logging
 import os
@@ -10,7 +11,6 @@ from typing import Any
 from typing import Callable
 from typing import List
 from typing import Optional
-import datetime
 from typing import Set
 
 _logger = logging.getLogger(__name__)
@@ -441,4 +441,6 @@ class TimerTask(AsyncTask):
     return True
 
 
-__all__ = ['AsyncTask', 'SQLExecutionTask', 'TaskStatus', 'TaskScheduler', 'TimerTask']
+__all__ = [
+    'AsyncTask', 'SQLExecutionTask', 'TaskStatus', 'TaskScheduler', 'TimerTask'
+]
