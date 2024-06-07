@@ -419,6 +419,9 @@ class SQLExecutionTask(AsyncTask):
 
 class TimerTask(AsyncTask):
 
+  BEFORE = 1
+  AFTER = 2
+
   def __init__(self,
                hour: int = 0,
                minute: int = 0,
@@ -435,7 +438,7 @@ class TimerTask(AsyncTask):
         hour=hour,
         minute=minute,
         second=second)
-    self.__run_flag = False
+    self.__run_flag = None
 
   def _timer(self):
     current_time = datetime.datetime.now()
@@ -443,14 +446,16 @@ class TimerTask(AsyncTask):
       time_gap = self.__wake_datetime - current_time
       _logger.info(f'休眠 {time_gap} 秒后唤醒')
       time.sleep(time_gap.seconds)
-    self.status = TaskStatus.READY
+    self.__run_flag = TimerTask.AFTER
+    super().update_status()
 
   def update_status(self):
     if not self.__run_flag:
+      self.__run_flag = TimerTask.BEFORE
       t = threading.Thread(target=self._timer, name=f'{self.name}-background')
       t.start()
-      self.__run_flag = True
-    return self.status
+    elif self.__run_flag == TimerTask.AFTER:
+      super().update_status()
 
   def process(self) -> Any:
     return None
