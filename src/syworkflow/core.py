@@ -64,7 +64,7 @@ class AsyncTask(object):
       ]
     else:
       self.__dep_tasks: List[AsyncTask] = []
-    self._status: TaskStatus = TaskStatus.WAITING
+    self.__status: TaskStatus = TaskStatus.WAITING
     self.__name = name
     if self.__name is None:
       self.__name = f'{self.__class__.__name__}-{AsyncTask.__seq_number()}'
@@ -121,7 +121,12 @@ class AsyncTask(object):
   def status(self):
     """任务状态"""
     with self.__lock:
-      return self._status
+      return self.__status
+
+  @status.setter
+  def status(self, s: TaskStatus):
+    with self.__lock:
+      self.__status = s
 
   def is_ready(self):
     """任务是否已就绪"""
@@ -137,14 +142,14 @@ class AsyncTask(object):
     在上游任务均为 `DONE` 时修改本任务状态为 `READY`
     """
     with self.__lock:
-      if self._status == TaskStatus.WAITING:
+      if self.__status == TaskStatus.WAITING:
         dep_tasks = list(
             filter(
                 lambda t: t.status not in [TaskStatus.DONE, TaskStatus.ERROR],
                 self.dep_tasks))
         if not dep_tasks:
-          self._status = TaskStatus.READY
-          _logger.debug(f'任务 {self.__name} 状态修改为 {self._status}')
+          self.__status = TaskStatus.READY
+          _logger.debug(f'任务 {self.__name} 状态修改为 {self.__status}')
       else:
         raise RuntimeError("该方法仅可对处于等待（WAITING）状态的任务更新任务状态")
 
@@ -159,23 +164,23 @@ class AsyncTask(object):
     if list(filter(lambda t: t.status == TaskStatus.ERROR, self.dep_tasks)):
       _logger.error(f'任务 {self.name} 上游任务失败，本任务不再执行')
       with self.__lock:
-        self._status = TaskStatus.ERROR
+        self.__status = TaskStatus.ERROR
     else:
-      _logger.debug(f'执行任务 {self.name} 预处理方法')
+      _logger.info(f'执行任务 {self.name} 预处理方法')
       self.preprocess()
       with self.__lock:
-        self._status = TaskStatus.RUNNING
+        self.__status = TaskStatus.RUNNING
 
   def run(self):
     """
     Task任务对象异步实际执行代码，在用户代码基础上增加了异常处理逻辑
     """
-    _logger.debug(f'开始执行任务{self.name}主方法')
+    _logger.info(f'开始执行任务{self.name}主方法')
     run_count = 0
     while run_count < self.__retries:
       try:
         result = self.process()
-        _logger.debug(f'任务 {self.name} 主方法执行完成')
+        _logger.info(f'任务 {self.name} 主方法执行完成')
         return result
       except Exception as err:
         run_count += 1
@@ -184,7 +189,7 @@ class AsyncTask(object):
           _logger.error(f'任务 {self.name} 主方法执行错误 {repr(err)}')
           raise err
         else:
-          _logger.info(
+          _logger.warning(
               f'任务 {self.name} 主方法执行错误 {repr(err)}，第 {run_count + 1} 次尝试')
 
   def post_task(self, future: concurrent.futures.Future):
@@ -204,22 +209,22 @@ class AsyncTask(object):
     :param future: 为 `concurrent.futures.Future` 类实例，封装了 `AsyncTask.process` 方法执行结果。
     """
     if self.status == TaskStatus.ERROR:
-      _logger.debug(f'任务 {self.name} 执行前失败（上游有失败任务）')
+      _logger.warning(f'任务 {self.name} 执行前失败（上游有失败任务）')
     else:
       _logger.debug(f'执行任务 {self.name} 后处理方法')
       try:
         result = future.result()
         with self.__lock:
           self._result = result
-          self._status = TaskStatus.DONE
+          self.__status = TaskStatus.DONE
 
           # `postprocess` 中可以给 `self._status` 和 `self._result` 重新赋值
           self.postprocess(future)
-          _logger.debug(f'任务 {self.name} 后处理方法执行完成')
+          _logger.info(f'任务 {self.name} 后处理方法执行完成')
       except (BaseException, Exception) as err:
-        _logger.debug(f'任务 {self.name} 后处理方法，任务运行错误 {repr(err)}')
+        _logger.warning(f'任务 {self.name} 后处理方法，任务运行错误 {repr(err)}')
         with self.__lock:
-          self._status = TaskStatus.ERROR
+          self.__status = TaskStatus.ERROR
           self._result = err
         raise err
 
@@ -312,7 +317,7 @@ class TaskScheduler(object):
 
     :param task: `AsyncTask` 任务
     """
-    _logger.debug(f'任务 {task.name} 提交执行')
+    _logger.info(f'任务 {task.name} 提交执行')
     task.pre_task()
     future = self.__executor.submit(task.run)
     _logger.debug(f'添加任务 {task.name} 完成及通知回调')
@@ -327,7 +332,7 @@ class TaskScheduler(object):
     #   self.__task_set_cond.notify_all()
     _logger.debug(f'执行任务 {task.name} 回调')
     task.post_task(future)
-    _logger.debug(f'任务 {task.name} 完成，通知调度后续任务')
+    _logger.info(f'任务 {task.name} 完成，通知调度后续任务')
     self.__task_set_notifier.release()
 
   def start(self):
@@ -339,11 +344,11 @@ class TaskScheduler(object):
       #   self.__task_set_cond.wait(timeout=1)
       #   _logger.debug('收到任务完成通知')
 
-      _logger.debug('等待任务完成通知')
-      self.__task_set_notifier.acquire()
-      _logger.debug('收到任务完成通知')
+      # _logger.debug('等待任务完成通知')
+      if self.__task_set_notifier.acquire(timeout=1):
+        _logger.debug('收到任务完成通知')
 
-    _logger.debug('无待执行任务，等待已提交执行任务完成')
+    _logger.info('无待执行任务，等待已提交执行任务完成')
     self.__executor.shutdown(wait=True)
 
   def add_task(self, task: AsyncTask) -> None:
@@ -360,7 +365,7 @@ class TaskScheduler(object):
           _task, AsyncTask) and _task.status not in (TaskStatus.RUNNING,
                                                      TaskStatus.DONE,
                                                      TaskStatus.ERROR):
-        _logger.debug(f'将 {_task.name} 加入调度')
+        _logger.info(f'将 {_task.name} 加入调度')
         self.__task_set.add(_task)
         for t in _task.dep_tasks:
           _add_task(t)
@@ -404,11 +409,11 @@ class SQLExecutionTask(AsyncTask):
     conn = self.__connect_fn()
     for statement in sqls:
       cursor = conn.cursor()
-      _logger.debug(f'任务 {self.name} 执行SQL语句: {statement}')
+      _logger.info(f'任务 {self.name} 执行SQL语句: {statement}')
       cursor.execute(statement)
       cursor.close()
 
-    _logger.debug(f'任务 {self.name} 中所有 SQL 语句执行完毕')
+    _logger.info(f'任务 {self.name} 中所有 SQL 语句执行完毕')
     conn.close()
 
 
@@ -430,15 +435,25 @@ class TimerTask(AsyncTask):
         hour=hour,
         minute=minute,
         second=second)
+    self.__run_flag = False
 
-  def process(self) -> Any:
+  def _timer(self):
     current_time = datetime.datetime.now()
     if current_time < self.__wake_datetime:
       time_gap = self.__wake_datetime - current_time
       _logger.info(f'休眠 {time_gap} 秒后唤醒')
       time.sleep(time_gap.seconds)
+    self.status = TaskStatus.READY
 
-    return True
+  def update_status(self):
+    if not self.__run_flag:
+      t = threading.Thread(target=self._timer, name=f'{self.name}-background')
+      t.start()
+      self.__run_flag = True
+    return self.status
+
+  def process(self) -> Any:
+    return None
 
 
 __all__ = [
