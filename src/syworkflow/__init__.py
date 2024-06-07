@@ -1,4 +1,4 @@
-__version__ = '0.0.9'
+__version__ = '0.1'
 __author__ = 'Yao Siyuan <siyuan89@163.com>'
 
 from .core import AsyncTask
